@@ -1,0 +1,7 @@
+flask
+numpy
+pillow
+opencv-python-headless
+faster-whisper
+nvidia-cublas-cu12
+nvidia-cudnn-cu12==9.*

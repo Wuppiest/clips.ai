@@ -1,0 +1,135 @@
+<!doctype html><html lang="de"><meta charset="utf-8"><title>Clip Tool</title>
+<style>
+:root{color-scheme:dark;--bg:#13111a;--p:#1c1926;--l:#2d2940;--a:#a66bff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#eee;font:13px system-ui,sans-serif;display:grid;grid-template-columns:minmax(360px,1fr) 390px 350px;gap:10px;padding:10px;height:100vh}
+section{background:var(--p);border:1px solid var(--l);border-radius:10px;padding:12px;overflow:auto}
+h3{margin:14px 0 6px;font-size:14px;font-weight:600}h3:first-child{margin-top:0}
+button,input,select,textarea{background:var(--l);color:#eee;border:1px solid #3d3856;border-radius:6px;padding:5px 8px;font:inherit}
+button{cursor:pointer}button:hover{border-color:var(--a)}button.pri{background:var(--a);border-color:var(--a);color:#fff}
+.row{display:flex;gap:6px;align-items:center;margin:6px 0;flex-wrap:wrap}
+input[type=number]{width:62px}input[type=color]{padding:0;width:34px;height:28px}
+#stage{position:relative;display:inline-block;max-width:100%;background:#000}
+#stage video{display:block;max-width:100%;max-height:44vh}
+#src{position:absolute;inset:0;width:100%;height:100%;cursor:crosshair}
+#pv{width:360px;height:640px;background:#000;border-radius:8px;display:block;margin:0 auto}
+.hl,.ly{padding:6px 8px;border:1px solid var(--l);border-radius:6px;margin:4px 0}
+.hl{cursor:pointer}.hl:hover,.ly.sel{border-color:var(--a)}
+.sub{display:flex;gap:4px;margin:3px 0}.sub input[type=text]{flex:1;min-width:0}
+small{color:#9a94b3}
+</style>
+<body>
+<section>
+<h3>Quelle</h3>
+<div class="row"><button class="pri" id="open">Video öffnen</button><small id="fn"></small></div>
+<div id="stage"><video id="v"></video><canvas id="src"></canvas></div>
+<div class="row"><select id="mode"><option value="layer">Rahmen gilt für gewählte Ebene</option><option value="kf">Rahmen ist Killfeed (für die Analyse)</option></select></div>
+<small>Im Video einen Rahmen aufziehen, wie beim Snipping Tool.</small>
+<div class="row"><small>Start</small><input type=number id="st0" step=.1><button id="n0">jetzt</button><small>Ende</small><input type=number id="st1" step=.1><button id="n1">jetzt</button></div>
+<div class="row"><button class="pri" id="an">KI-Analyse</button><small id="ans"></small></div>
+</section>
+<section>
+<h3>Vorschau 9:16</h3>
+<canvas id="pv" width="360" height="640"></canvas>
+<div class="row"><button id="pl">▶</button><input type=range id="sc" min=0 max=20 step=.05 value=0 style="flex:1"><small id="tm"></small></div>
+<div class="row"><small>Layout</small><button data-p="A">A Overlay-Cam</button><button data-p="B">B Split</button></div>
+<div class="row"><button class="pri" id="ex">Exportieren</button><small id="exs"></small></div>
+</section>
+<section>
+<h3>Highlights</h3><div id="hls"><small>Noch keine. Starte die KI-Analyse.</small></div>
+<h3>Ebenen und Einblendungen</h3><div id="ly"></div>
+<div class="row"><button id="add">Neue Ebene</button></div>
+<small>Ebene wählen, dann im Video den Bereich aufziehen. In der Vorschau verschieben, Ecke unten rechts skaliert. Von/bis: Zeit im Clip, leer heißt immer sichtbar.</small>
+<h3>Hook</h3>
+<textarea id="hk" rows=3 style="width:100%"></textarea><small>*Wort* wird rot.</small>
+<div class="row"><small>Größe</small><input type=number id="hs"><small>X</small><input type=number id="hx"><small>Y</small><input type=number id="hy"></div>
+<div class="row"><small>von</small><input type=number id="h0" step=.1><small>bis</small><input type=number id="h1" step=.1><label><input type=checkbox id="hon"> an</label></div>
+<h3>Untertitel</h3>
+<div class="row"><select id="sm"><option value="hl">Wort-Highlight</option><option value="plain">Normal</option></select><small>Y</small><input type=number id="sy"><small>Größe</small><input type=number id="ss"></div>
+<div class="row"><small>Farbe</small><input type=color id="c1"><small>Highlight</small><input type=color id="c2"><label><input type=checkbox id="son"> an</label></div>
+<div id="sb"></div><div class="row"><button id="sadd">Untertitel hinzufügen</button></div>
+</section>
+<script>
+const $=s=>document.querySelector(s),v=$('#v'),sc=$('#src'),sx=sc.getContext('2d'),pv=$('#pv'),px=pv.getContext('2d');
+const S={W:1920,H:1080,start:0,end:20,layers:[],sel:-1,kf:null,hls:[],subs:[],
+ hook:{text:'BASTIS *PROBLEM*\nMIT *BEDROCK*...',size:84,x:540,y:560,t0:null,t1:null,on:true},
+ st:{mode:'hl',y:1100,size:90,c1:'#ffffff',c2:'#d9a8ff',on:true}};
+const fmt=t=>Math.floor(t/60)+':'+String(Math.floor(t%60)).padStart(2,'0');
+const vis=(o,r)=>(o.t0==null||r>=o.t0)&&(o.t1==null||r<=o.t1);
+const post=(u,b)=>fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})}).then(r=>r.json());
+async function wait(el){for(;;){const s=await fetch('/api/status').then(r=>r.json());el.textContent=s.msg;if(s.done)return s.error?(el.textContent='Fehler: '+s.error,null):s.result;await new Promise(r=>setTimeout(r,800))}}
+const bind=(id,o,k,t)=>{const e=$('#'+id);if(t=='b')e.checked=o[k];else e.value=o[k]??'';e[t=='b'?'onchange':'oninput']=()=>{o[k]=t=='b'?e.checked:t=='n'?(e.value===''?null:+e.value):e.value}};
+bind('hk',S.hook,'text');bind('hs',S.hook,'size','n');bind('hx',S.hook,'x','n');bind('hy',S.hook,'y','n');bind('h0',S.hook,'t0','n');bind('h1',S.hook,'t1','n');bind('hon',S.hook,'on','b');
+bind('sm',S.st,'mode');bind('sy',S.st,'y','n');bind('ss',S.st,'size','n');bind('c1',S.st,'c1');bind('c2',S.st,'c2');bind('son',S.st,'on','b');
+// Layout
+function crop(a){let w=S.H*a,h=S.H;if(w>S.W){w=S.W;h=S.W/a}return{sx:Math.round((S.W-w)/2),sy:Math.round((S.H-h)/2),sw:Math.round(w),sh:Math.round(h)}}
+const mk=(name,r,x,y,w,b=0)=>({name,...r,x,y,w,b,t0:null,t1:null});
+function preset(p){const cam={sx:0,sy:0,sw:Math.round(S.W*.25),sh:Math.round(S.H*.25)};
+ if(p=='A'){S.layers=[mk('Gameplay',crop(9/16),0,0,1080),mk('Facecam',cam,130,1480,820,6)];S.hook.y=140}
+ else{const ch=Math.round(1080*cam.sh/cam.sw);S.layers=[mk('Gameplay',crop(1080/(1920-ch)),0,ch,1080),mk('Facecam',cam,0,0,1080)];S.hook.y=ch-60}
+ $('#hy').value=S.hook.y;S.sel=1;renderLayers()}
+document.querySelectorAll('[data-p]').forEach(b=>b.onclick=()=>preset(b.dataset.p));
+$('#add').onclick=()=>{S.layers.push(mk('Ebene '+(S.layers.length+1),crop(16/9),140,700,800,6));S.sel=S.layers.length-1;renderLayers()};
+function renderLayers(){$('#ly').innerHTML=S.layers.map((l,i)=>`<div class="ly ${i==S.sel?'sel':''}" data-i="${i}"><div class="row"><input value="${l.name}" data-k="name" style="width:110px"><button data-a="up" title="nach vorne">↑</button><button data-a="dn" title="nach hinten">↓</button><button data-a="del">Löschen</button></div><div class="row"><small>von</small><input type=number step=.1 data-k="t0" value="${l.t0??''}"><small>bis</small><input type=number step=.1 data-k="t1" value="${l.t1??''}"><small>Rahmen</small><input type=number data-k="b" value="${l.b}"></div></div>`).join('')}
+$('#ly').oninput=e=>{const d=e.target.closest('.ly'),k=e.target.dataset.k;if(!d||!k)return;const l=S.layers[+d.dataset.i];let x=e.target.value;l[k]=(k=='t0'||k=='t1')?(x===''?null:+x):k=='b'?+x:x};
+$('#ly').onclick=e=>{const d=e.target.closest('.ly');if(!d)return;const i=+d.dataset.i,a=e.target.dataset.a,L=S.layers;
+ if(a=='del'){L.splice(i,1);S.sel=-1}else if(a=='up'&&i<L.length-1)[L[i],L[i+1]]=[L[i+1],L[i]];else if(a=='dn'&&i>0)[L[i],L[i-1]]=[L[i-1],L[i]];else if(S.sel!=i)S.sel=i;else return;renderLayers()};
+// Quelle
+$('#open').onclick=async()=>{const r=await post('/api/pick');if(!r.path)return;$('#fn').textContent=r.path;v.src='/video?'+Date.now()};
+v.onloadedmetadata=()=>{S.W=v.videoWidth;S.H=v.videoHeight;S.start=0;S.end=Math.min(v.duration,30);if(!S.layers.length)preset('B');sync()};
+function sync(){$('#st0').value=S.start.toFixed(1);$('#st1').value=S.end.toFixed(1);$('#sc').max=Math.max(1,S.end-S.start);renderSubs()}
+$('#st0').onchange=e=>{S.start=+e.target.value;sync()};$('#st1').onchange=e=>{S.end=+e.target.value;sync()};
+$('#n0').onclick=()=>{S.start=v.currentTime;sync()};$('#n1').onclick=()=>{S.end=v.currentTime;sync()};
+$('#pl').onclick=()=>{if(v.paused){if(v.currentTime<S.start||v.currentTime>=S.end)v.currentTime=S.start;v.play()}else v.pause()};
+v.onplay=()=>$('#pl').textContent='⏸';v.onpause=()=>$('#pl').textContent='▶';v.ontimeupdate=()=>{if(v.currentTime>=S.end)v.pause()};
+$('#sc').oninput=e=>{v.currentTime=S.start+ +e.target.value};
+let rg=null;const sp=e=>{const f=S.W/sc.clientWidth;return[e.offsetX*f,e.offsetY*f]};
+sc.onpointerdown=e=>{rg={a:sp(e),b:sp(e)};sc.setPointerCapture(e.pointerId)};
+sc.onpointermove=e=>{if(rg)rg.b=sp(e)};
+sc.onpointerup=()=>{if(!rg)return;const x=Math.min(rg.a[0],rg.b[0]),y=Math.min(rg.a[1],rg.b[1]),w=Math.abs(rg.a[0]-rg.b[0]),h=Math.abs(rg.a[1]-rg.b[1]);rg=null;if(w<20||h<20)return;
+ const r={x:Math.round(x),y:Math.round(y),w:Math.round(w),h:Math.round(h)};if($('#mode').value=='kf')S.kf=r;else if(S.layers[S.sel])Object.assign(S.layers[S.sel],{sx:r.x,sy:r.y,sw:r.w,sh:r.h})};
+// Analyse
+function renderHls(){$('#hls').innerHTML=S.hls.map(h=>`<div class="hl" data-t="${h.t}"><b>${fmt(h.t)}</b> Score ${h.score}<br><small>${h.label}</small></div>`).join('')||'<small>Nichts gefunden.</small>'}
+$('#hls').onclick=e=>{const d=e.target.closest('.hl');if(!d)return;const t=+d.dataset.t;S.start=Math.max(0,t-12);S.end=Math.min(v.duration,t+8);v.currentTime=S.start;sync()};
+$('#an').onclick=async()=>{const el=$('#ans'),k=S.kf;await post('/api/analyze',{kf:k&&{x:k.x/S.W,y:k.y/S.H,w:k.w/S.W,h:k.h/S.H}});const r=await wait(el);if(!r)return;S.subs=r.subs;S.hls=r.highlights;el.textContent='Fertig';renderHls();renderSubs()};
+// Untertitel
+function renderSubs(){$('#sb').innerHTML=S.subs.map((c,i)=>c.e<S.start||c.s>S.end?'':`<div class="sub" data-i="${i}"><input type=number step=.05 data-k="s" value="${c.s}" style="width:58px"><input type=number step=.05 data-k="e" value="${c.e}" style="width:58px"><input type=text data-k="t" value="${c.t.replace(/"/g,'&quot;')}"><button data-a="go">▶</button><button data-a="del">✕</button></div>`).join('')}
+$('#sb').oninput=e=>{const d=e.target.closest('.sub'),k=e.target.dataset.k;if(!d||!k)return;S.subs[+d.dataset.i][k]=k=='t'?e.target.value:+e.target.value};
+$('#sb').onclick=e=>{const d=e.target.closest('.sub'),a=e.target.dataset.a;if(!d||!a)return;const i=+d.dataset.i;if(a=='go')v.currentTime=S.subs[i].s;else{S.subs.splice(i,1);renderSubs()}};
+$('#sadd').onclick=()=>{const t=v.currentTime;S.subs.push({s:+t.toFixed(2),e:+(t+1).toFixed(2),t:'Text'});S.subs.sort((a,b)=>a.s-b.s);renderSubs()};
+// Export
+$('#ex').onclick=async()=>{const el=$('#exs');el.textContent='Starte…';await post('/api/export',{start:S.start,end:S.end,layers:S.layers,hook:S.hook.on?S.hook:null,subs:S.subs,st:S.st});const r=await wait(el);if(r)el.textContent='Fertig: '+r.out};
+// Vorschau-Interaktion (Koordinaten 1080x1920 = 3x Canvas)
+const parseLine=s=>{const o=[];let r=false;s.split('*').forEach((t,i)=>{if(i)r=!r;if(t)o.push({t,r})});return o};
+function hookGeom(){const h=S.hook;px.font=`bold ${h.size}px Arial`;const L=h.text.split('\n').map(parseLine),ws=L.map(l=>l.reduce((a,s)=>a+px.measureText(s.t).width,0)),w=Math.max(0,...ws)+56;return{L,ws,w,h:L.length*Math.floor(h.size*1.15)+56,x:h.x-w/2,y:h.y}}
+const lh=l=>l.w*l.sh/l.sw;let drag=null;
+pv.onpointerdown=e=>{const X=e.offsetX*3,Y=e.offsetY*3,l=S.layers[S.sel];
+ if(l&&X>l.x+l.w-70&&X<l.x+l.w+20&&Y>lh(l)+l.y-70&&Y<lh(l)+l.y+20){drag={k:'rs',l};pv.setPointerCapture(e.pointerId);return}
+ const g=hookGeom();if(S.hook.on&&X>g.x&&X<g.x+g.w&&Y>g.y&&Y<g.y+g.h){drag={k:'hk',dx:X-S.hook.x,dy:Y-S.hook.y};pv.setPointerCapture(e.pointerId);return}
+ for(let i=S.layers.length-1;i>=0;i--){const m=S.layers[i];if(X>=m.x&&X<=m.x+m.w&&Y>=m.y&&Y<=m.y+lh(m)){S.sel=i;renderLayers();drag={k:'mv',l:m,dx:X-m.x,dy:Y-m.y};pv.setPointerCapture(e.pointerId);return}}};
+pv.onpointermove=e=>{if(!drag)return;const X=e.offsetX*3,Y=e.offsetY*3;
+ if(drag.k=='mv'){drag.l.x=Math.round(X-drag.dx);drag.l.y=Math.round(Y-drag.dy)}else if(drag.k=='rs')drag.l.w=Math.max(120,Math.round(X-drag.l.x));
+ else{S.hook.x=Math.round(X-drag.dx);S.hook.y=Math.round(Y-drag.dy);$('#hx').value=S.hook.x;$('#hy').value=S.hook.y}};
+pv.onpointerup=()=>{drag=null};
+// Zeichnen
+function draw(){requestAnimationFrame(draw);
+ sc.width=sc.clientWidth;sc.height=sc.clientHeight;const f=sc.width/S.W;sx.lineWidth=2;
+ S.layers.forEach((l,i)=>{sx.strokeStyle=i==S.sel?'#a66bff':'#ffffff88';sx.strokeRect(l.sx*f,l.sy*f,l.sw*f,l.sh*f)});
+ if(S.kf){sx.strokeStyle='#ff9a2e';sx.strokeRect(S.kf.x*f,S.kf.y*f,S.kf.w*f,S.kf.h*f)}
+ if(rg){sx.strokeStyle='#fff';sx.setLineDash([6,4]);sx.strokeRect(rg.a[0]*f,rg.a[1]*f,(rg.b[0]-rg.a[0])*f,(rg.b[1]-rg.a[1])*f);sx.setLineDash([])}
+ const t=v.currentTime,rel=t-S.start;if(document.activeElement!=$('#sc'))$('#sc').value=Math.max(0,rel);$('#tm').textContent=fmt(Math.max(0,rel))+' / '+fmt(S.end-S.start);
+ px.setTransform(1/3,0,0,1/3,0,0);px.fillStyle='#000';px.fillRect(0,0,1080,1920);
+ S.layers.forEach((l,i)=>{if(!vis(l,rel))return;const h=lh(l);
+  if(v.readyState>1)try{px.drawImage(v,l.sx,l.sy,l.sw,l.sh,l.x,l.y,l.w,h)}catch(e){}
+  if(l.b){px.strokeStyle='#fff';px.lineWidth=l.b;px.strokeRect(l.x+l.b/2,l.y+l.b/2,l.w-l.b,h-l.b)}
+  if(i==S.sel){px.strokeStyle='#a66bff';px.lineWidth=6;px.strokeRect(l.x,l.y,l.w,h);px.fillStyle='#a66bff';px.fillRect(l.x+l.w-40,l.y+h-40,40,40)}});
+ const H=S.hook;if(H.on&&vis(H,rel)){const g=hookGeom();px.fillStyle='#fff';px.beginPath();px.roundRect(g.x,g.y,g.w,g.h,36);px.fill();px.textBaseline='top';
+  g.L.forEach((l,i)=>{let x=g.x+(g.w-g.ws[i])/2;l.forEach(s=>{px.fillStyle=s.r?'#ff1a1a':'#000';px.fillText(s.t,x,g.y+28+i*Math.floor(H.size*1.15));x+=px.measureText(s.t).width})})}
+ const c=S.subs.find(c=>t>=c.s&&t<=c.e);
+ if(c&&S.st.on){const ws=c.t.split(/\s+/),hl=S.st.mode=='hl',n=hl?Math.min(ws.length,1+Math.floor((t-c.s)/(c.e-c.s)*ws.length)):ws.length,sh=ws.slice(0,n);
+  px.font=`bold ${S.st.size}px Arial`;px.textBaseline='middle';px.lineJoin='round';px.lineWidth=S.st.size*.18;px.strokeStyle='#000';
+  let x=540-px.measureText(sh.join(' ')).width/2;px.strokeText(sh.join(' '),x,S.st.y);
+  sh.forEach((w,i)=>{px.fillStyle=(hl&&i<n-1)?S.st.c2:S.st.c1;px.fillText(w+' ',x,S.st.y);x+=px.measureText(w+' ').width})}}
+draw();renderLayers();
+</script>
+</body></html>
