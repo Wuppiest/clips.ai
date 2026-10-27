@@ -1,0 +1,24 @@
+name: build
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  win:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt pyinstaller
+      - shell: pwsh
+        run: |
+          curl.exe -L -o ff.zip https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip
+          Expand-Archive ff.zip ff
+          Copy-Item (Get-ChildItem ff -Recurse -Filter ffmpeg.exe | Select-Object -First 1).FullName ffmpeg.exe
+      - run: pyinstaller --noconfirm --onedir --name ClipTool --add-data "index.html;." --add-binary "ffmpeg.exe;." --collect-all faster_whisper --collect-all ctranslate2 --collect-all nvidia.cublas --collect-all nvidia.cudnn app.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ClipTool-Windows
+          path: dist/ClipTool
